@@ -547,25 +547,74 @@ function buildGithubStylePreview(operation: PatchOperation, theme: Theme): strin
   lines.push(theme.fg("toolDiffAdded", `+++ ${destinationPath}`));
 
   if (operation.kind === "delete") {
-    lines.push(theme.fg("dim", "@@ file removed @@"));
+    lines.push(theme.fg("dim", formatUnifiedHeader(1, 0, 0, 0)));
+    lines.push(theme.fg("muted", "(file content is not included in delete-only apply_patch operations)"));
     return lines;
   }
+
+  let oldLine = operation.kind === "add" ? 0 : 1;
+  let newLine = 1;
 
   for (const [index, hunk] of operation.hunks.entries()) {
     if (index > 0) {
       lines.push("");
     }
-    lines.push(theme.fg("dim", formatGithubHunkHeader(hunk.header)));
+    const range = computeUnifiedRange(hunk, oldLine, newLine);
+    lines.push(theme.fg("dim", formatGithubHunkHeader(range, hunk.header)));
     for (const rawLine of hunk.lines) {
       lines.push(colorGithubDiffLine(rawLine, theme));
     }
+    oldLine = range.nextOldLine;
+    newLine = range.nextNewLine;
   }
 
   return lines;
 }
 
-function formatGithubHunkHeader(header: string): string {
-  return header ? `@@ ${header} @@` : "@@";
+function formatGithubHunkHeader(
+  range: { oldStart: number; oldCount: number; newStart: number; newCount: number },
+  header: string,
+): string {
+  const title = formatUnifiedHeader(range.oldStart, range.oldCount, range.newStart, range.newCount);
+  return header ? `${title} ${header}` : title;
+}
+
+function formatUnifiedHeader(oldStart: number, oldCount: number, newStart: number, newCount: number): string {
+  return `@@ -${formatUnifiedRange(oldStart, oldCount)} +${formatUnifiedRange(newStart, newCount)} @@`;
+}
+
+function formatUnifiedRange(start: number, count: number): string {
+  return count === 1 ? `${start}` : `${start},${count}`;
+}
+
+function computeUnifiedRange(
+  hunk: PatchHunk,
+  oldStart: number,
+  newStart: number,
+): { oldStart: number; oldCount: number; newStart: number; newCount: number; nextOldLine: number; nextNewLine: number } {
+  let oldCount = 0;
+  let newCount = 0;
+  let nextOldLine = oldStart;
+  let nextNewLine = newStart;
+
+  for (const line of hunk.lines) {
+    if (line.startsWith("-")) {
+      oldCount += 1;
+      nextOldLine += 1;
+      continue;
+    }
+    if (line.startsWith("+")) {
+      newCount += 1;
+      nextNewLine += 1;
+      continue;
+    }
+    oldCount += 1;
+    newCount += 1;
+    nextOldLine += 1;
+    nextNewLine += 1;
+  }
+
+  return { oldStart, oldCount, newStart, newCount, nextOldLine, nextNewLine };
 }
 
 function colorGithubDiffLine(line: string, theme: Theme): string {
