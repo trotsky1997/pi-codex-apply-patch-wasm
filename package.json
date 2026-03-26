@@ -1,0 +1,38 @@
+{
+  "name": "pi-codex-apply-patch-wasm",
+  "version": "0.1.0",
+  "description": "Pi extension that exposes the upstream Codex apply_patch WASM binary with Codex-style TUI rendering.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trotsky1997/pi-codex-apply-patch-wasm.git"
+  },
+  "homepage": "https://github.com/trotsky1997/pi-codex-apply-patch-wasm#readme",
+  "bugs": {
+    "url": "https://github.com/trotsky1997/pi-codex-apply-patch-wasm/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "apply-patch",
+    "codex"
+  ],
+  "files": [
+    "index.ts",
+    "runner.mjs",
+    "vendor/apply_patch.wasm",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
