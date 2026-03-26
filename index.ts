@@ -1,4 +1,4 @@
-import { renderDiff, type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@mariozechner/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionCommandContext, type Theme } from "@mariozechner/pi-coding-agent";
 import { Container, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { spawn } from "node:child_process";
@@ -522,55 +522,60 @@ function renderChangeCounts(operation: PatchOperation, theme: Theme): string {
 }
 
 function renderOperationPreview(operation: PatchOperation, theme: Theme): string[] {
-  if (operation.kind === "delete") {
-    return [theme.fg("muted", "    File will be deleted")];
-  }
-
-  const diffText = buildPreviewDiff(operation);
-  if (!diffText) {
-    return [];
-  }
-
-  return renderDiff(diffText)
-    .split("\n")
-    .map((line: string) => (line.length > 0 ? `    ${line}` : ""));
+  const lines = buildGithubStylePreview(operation, theme);
+  return lines.map((line) => (line.length > 0 ? `    ${line}` : ""));
 }
 
-function buildPreviewDiff(operation: PatchOperation): string {
+function buildGithubStylePreview(operation: PatchOperation, theme: Theme): string[] {
+  const targetPath = operation.movePath ?? operation.path;
+  const sourcePath = operation.kind === "add" ? "/dev/null" : `a/${operation.path}`;
+  const destinationPath = operation.kind === "delete" ? "/dev/null" : `b/${targetPath}`;
+  const lines: string[] = [
+    theme.fg("dim", `diff --git a/${operation.path} b/${targetPath}`),
+  ];
+
   if (operation.kind === "add") {
-    const lines = operation.hunks[0]?.lines ?? [];
-    return lines.map((line, index) => `+${index + 1} ${line.slice(1)}`).join("\n");
+    lines.push(theme.fg("dim", "new file mode 100644"));
+  } else if (operation.kind === "delete") {
+    lines.push(theme.fg("dim", "deleted file mode 100644"));
+  } else if (operation.movePath) {
+    lines.push(theme.fg("dim", `rename from ${operation.path}`));
+    lines.push(theme.fg("dim", `rename to ${operation.movePath}`));
   }
 
-  let oldLine = 1;
-  let newLine = 1;
-  const rendered: string[] = [];
+  lines.push(theme.fg("toolDiffRemoved", `--- ${sourcePath}`));
+  lines.push(theme.fg("toolDiffAdded", `+++ ${destinationPath}`));
+
+  if (operation.kind === "delete") {
+    lines.push(theme.fg("dim", "@@ file removed @@"));
+    return lines;
+  }
 
   for (const [index, hunk] of operation.hunks.entries()) {
     if (index > 0) {
-      rendered.push("");
+      lines.push("");
     }
-    if (hunk.header) {
-      rendered.push(`@@ ${hunk.header}`);
-    }
-    for (const line of hunk.lines) {
-      const marker = line[0];
-      const content = line.slice(1);
-      if (marker === " ") {
-        rendered.push(` ${newLine} ${content}`);
-        oldLine += 1;
-        newLine += 1;
-      } else if (marker === "-") {
-        rendered.push(`-${oldLine} ${content}`);
-        oldLine += 1;
-      } else if (marker === "+") {
-        rendered.push(`+${newLine} ${content}`);
-        newLine += 1;
-      }
+    lines.push(theme.fg("dim", formatGithubHunkHeader(hunk.header)));
+    for (const rawLine of hunk.lines) {
+      lines.push(colorGithubDiffLine(rawLine, theme));
     }
   }
 
-  return rendered.join("\n");
+  return lines;
+}
+
+function formatGithubHunkHeader(header: string): string {
+  return header ? `@@ ${header} @@` : "@@";
+}
+
+function colorGithubDiffLine(line: string, theme: Theme): string {
+  if (line.startsWith("+")) {
+    return theme.fg("toolDiffAdded", line);
+  }
+  if (line.startsWith("-")) {
+    return theme.fg("toolDiffRemoved", line);
+  }
+  return theme.fg("toolDiffContext", line);
 }
 
 function renderResultFallback(
