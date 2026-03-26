@@ -45,3 +45,11 @@ To refresh the bundled binary from this workspace build:
 ```bash
 cp codex/codex-rs/target/wasm32-wasip1/debug/apply_patch.wasm .pi/extensions/apply-patch/vendor/apply_patch.wasm
 ```
+
+Or use the bundled rebuild script and point it at an existing `codex/codex-rs` checkout:
+
+```bash
+./scripts/rebuild-codex-apply-patch-wasm.sh \
+  --codex-rs-dir /path/to/codex/codex-rs \
+  --wasi-sdk-dir /path/to/wasi-sdk-32.0-x86_64-linux
+```

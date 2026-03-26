@@ -21,6 +21,7 @@
   "files": [
     "index.ts",
     "runner.mjs",
+    "scripts/rebuild-codex-apply-patch-wasm.sh",
     "vendor/apply_patch.wasm",
     "README.md"
   ],
