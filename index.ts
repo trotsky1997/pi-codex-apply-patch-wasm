@@ -530,6 +530,7 @@ function buildGithubStylePreview(operation: PatchOperation, theme: Theme): strin
   const targetPath = operation.movePath ?? operation.path;
   const sourcePath = operation.kind === "add" ? "/dev/null" : `a/${operation.path}`;
   const destinationPath = operation.kind === "delete" ? "/dev/null" : `b/${targetPath}`;
+  const numberWidths = computePreviewNumberWidths(operation);
   const lines: string[] = [
     theme.fg("dim", `diff --git a/${operation.path} b/${targetPath}`),
   ];
@@ -561,9 +562,7 @@ function buildGithubStylePreview(operation: PatchOperation, theme: Theme): strin
     }
     const range = computeUnifiedRange(hunk, oldLine, newLine);
     lines.push(theme.fg("dim", formatGithubHunkHeader(range, hunk.header)));
-    for (const rawLine of hunk.lines) {
-      lines.push(colorGithubDiffLine(rawLine, theme));
-    }
+    lines.push(...renderGithubHunkLines(hunk, range, numberWidths, theme));
     oldLine = range.nextOldLine;
     newLine = range.nextNewLine;
   }
@@ -615,6 +614,59 @@ function computeUnifiedRange(
   }
 
   return { oldStart, oldCount, newStart, newCount, nextOldLine, nextNewLine };
+}
+
+function computePreviewNumberWidths(operation: PatchOperation): { oldWidth: number; newWidth: number } {
+  let oldMax = 0;
+  let newMax = 0;
+  let oldLine = operation.kind === "add" ? 0 : 1;
+  let newLine = 1;
+
+  for (const hunk of operation.hunks) {
+    const range = computeUnifiedRange(hunk, oldLine, newLine);
+    oldMax = Math.max(oldMax, range.nextOldLine - 1);
+    newMax = Math.max(newMax, range.nextNewLine - 1);
+    oldLine = range.nextOldLine;
+    newLine = range.nextNewLine;
+  }
+
+  return {
+    oldWidth: Math.max(String(oldMax || 0).length, 1),
+    newWidth: Math.max(String(newMax || 0).length, 1),
+  };
+}
+
+function renderGithubHunkLines(
+  hunk: PatchHunk,
+  range: { oldStart: number; newStart: number },
+  widths: { oldWidth: number; newWidth: number },
+  theme: Theme,
+): string[] {
+  const lines: string[] = [];
+  let oldLine = range.oldStart;
+  let newLine = range.newStart;
+
+  for (const rawLine of hunk.lines) {
+    const marker = rawLine[0];
+    let oldNumber = "";
+    let newNumber = "";
+
+    if (marker === " " || marker === "-") {
+      oldNumber = String(oldLine);
+      oldLine += 1;
+    }
+    if (marker === " " || marker === "+") {
+      newNumber = String(newLine);
+      newLine += 1;
+    }
+
+    const oldColumn = theme.fg("dim", oldNumber.padStart(widths.oldWidth, " "));
+    const newColumn = theme.fg("dim", newNumber.padStart(widths.newWidth, " "));
+    const gutter = theme.fg("dim", " | ");
+    lines.push(`${oldColumn} ${newColumn}${gutter}${colorGithubDiffLine(rawLine, theme)}`);
+  }
+
+  return lines;
 }
 
 function colorGithubDiffLine(line: string, theme: Theme): string {
