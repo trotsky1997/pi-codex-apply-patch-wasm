@@ -7,28 +7,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-type PatchOperationKind = "add" | "delete" | "update";
-
-type PatchHunk = {
-  header: string;
-  lines: string[];
-};
-
-type PatchOperation = {
-  kind: PatchOperationKind;
-  path: string;
-  movePath?: string;
-  hunks: PatchHunk[];
-  added: number;
-  removed: number;
-};
-
-type ParsedPatch = {
-  operations: PatchOperation[];
-  totalAdded: number;
-  totalRemoved: number;
-};
+import { parsePatch, preparePatchInput, type ParsedPatch, type PatchOperation } from "./patch-format.ts";
 
 type ApplyPatchToolDetails = {
   cwd: string;
@@ -76,12 +55,84 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "apply_patch",
     label: "Apply Patch",
-    description:
-      "Apply a Codex-style patch using the upstream codex-apply-patch wasm binary. Input must be the full patch text wrapped in *** Begin Patch / *** End Patch.",
+    description: [
+      "Use the `apply_patch` tool to edit files.",
+      "Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply.",
+      "Send the entire patch as a single string in `patch`.",
+      "",
+      "Patch format:",
+      "- The patch must start with `*** Begin Patch` and end with `*** End Patch`.",
+      "- Inside the patch, include one or more file operations.",
+      "- Each file operation must start with exactly one of:",
+      "  - `*** Add File: <relative path>`",
+      "  - `*** Delete File: <relative path>`",
+      "  - `*** Update File: <relative path>`",
+      "- For `*** Update File`, you may optionally add `*** Move to: <new relative path>` immediately after the update header to rename the file.",
+      "- Updated files must contain one or more hunks introduced by `@@`.",
+      "- Inside a hunk, each line must begin with exactly one of:",
+      "  - ` ` for context",
+      "  - `-` for removed lines",
+      "  - `+` for added lines",
+      "- You may include `*** End of File` inside an update hunk when needed.",
+      "",
+      "Context rules for update hunks:",
+      "- By default, include 3 lines of context before and after each change.",
+      "- If a change is close to another change, do not duplicate overlapping context.",
+      "- If 3 lines of context are not enough to uniquely identify the location, use an `@@` header such as `@@ class MyClass` or `@@ function myFunction`.",
+      "- If needed, use multiple `@@` location markers to narrow down the target location.",
+      "",
+      "Rules for add, delete, and update:",
+      "- `*** Add File` creates a new file. Every content line in the new file must start with `+`.",
+      "- `*** Delete File` removes an existing file and has no following body lines.",
+      "- `*** Update File` modifies an existing file in place.",
+      "",
+      "Path rules:",
+      "- File paths must be relative paths only.",
+      "- Never use absolute paths.",
+      "",
+      "Important:",
+      "- Do not send prose, explanations, markdown fences, or JSON inside `patch`.",
+      "- Send only the raw patch text.",
+    ].join("\n"),
+    promptSnippet: "Apply Codex-style file patches using the full patch envelope.",
+    promptGuidelines: [
+      "Use `apply_patch` when you need to make precise file edits in one or more files.",
+      "Always send a complete raw patch string in `patch`, wrapped in `*** Begin Patch` and `*** End Patch`.",
+      "For `*** Add File`, prefix every file content line with `+`.",
+      "For `*** Update File`, include one or more `@@` hunks with context lines.",
+      "Use only relative paths, never absolute paths.",
+      "Do not include markdown code fences or extra explanation in the `patch` field.",
+    ],
     parameters: Type.Object({
       patch: Type.String({
-        description:
-          "The full patch text. Use Codex apply_patch format with Add File, Delete File, Update File, optional Move to, and @@ hunks.",
+        description: [
+          "The full contents of the apply_patch command as one string.",
+          "Must start with `*** Begin Patch` and end with `*** End Patch`.",
+          "Use only relative file paths.",
+          "",
+          "Grammar summary:",
+          "Patch := Begin { FileOp } End",
+          'Begin := "*** Begin Patch"',
+          'End := "*** End Patch"',
+          'FileOp := AddFile | DeleteFile | UpdateFile',
+          'AddFile := "*** Add File: " path + newline + { "+" line }',
+          'DeleteFile := "*** Delete File: " path',
+          'UpdateFile := "*** Update File: " path + [ MoveTo ] + { Hunk }',
+          'MoveTo := "*** Move to: " newPath',
+          'Hunk := "@@" [ header ] + newline + { HunkLine } + [ "*** End of File" ]',
+          'HunkLine := " " text | "-" text | "+" text',
+          "",
+          "Example:",
+          "*** Begin Patch",
+          "*** Add File: hello.txt",
+          "+Hello world",
+          "*** Update File: src/app.py",
+          "@@ def greet():",
+          '-print("Hi")',
+          '+print("Hello, world!")',
+          "*** Delete File: obsolete.txt",
+          "*** End Patch",
+        ].join("\n"),
       }),
     }),
     async execute(
@@ -92,7 +143,11 @@ export default function applyPatchExtension(pi: ExtensionAPI) {
       ctx: { cwd: string },
     ) {
       const wasmPath = resolveWasmPath();
-      const result = await runApplyPatchWasm(wasmPath, ctx.cwd, params.patch);
+      const preparedPatch = preparePatchInput(params.patch, ctx.cwd);
+      if (preparedPatch.error) {
+        throw new Error(preparedPatch.error);
+      }
+      const result = await runApplyPatchWasm(wasmPath, ctx.cwd, preparedPatch.patch);
 
       if (result.exitCode !== 0) {
         throw new Error(formatFailure(result));
@@ -267,182 +322,6 @@ function getParsedPatch(state: ApplyPatchRenderState, patchText: unknown): Parse
     state.parsedPatch = parsePatch(patch);
   }
   return state.parsedPatch ?? null;
-}
-
-function parsePatch(patch: string): ParsedPatch | null {
-  const lines = patch.replace(/\r\n?/g, "\n").split("\n");
-  if (lines.length < 2 || lines[0].trim() !== "*** Begin Patch") {
-    return null;
-  }
-
-  const operations: PatchOperation[] = [];
-  let i = 1;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    if (line === "*** End Patch") {
-      break;
-    }
-
-    if (line.length === 0) {
-      i += 1;
-      continue;
-    }
-
-    if (line.startsWith("*** Add File: ")) {
-      const parsed = parseAddOperation(lines, i);
-      if (!parsed) {
-        return null;
-      }
-      operations.push(parsed.operation);
-      i = parsed.nextIndex;
-      continue;
-    }
-
-    if (line.startsWith("*** Delete File: ")) {
-      operations.push({
-        kind: "delete",
-        path: line.slice("*** Delete File: ".length).trim(),
-        hunks: [],
-        added: 0,
-        removed: 0,
-      });
-      i += 1;
-      continue;
-    }
-
-    if (line.startsWith("*** Update File: ")) {
-      const parsed = parseUpdateOperation(lines, i);
-      if (!parsed) {
-        return null;
-      }
-      operations.push(parsed.operation);
-      i = parsed.nextIndex;
-      continue;
-    }
-
-    return null;
-  }
-
-  if (operations.length === 0) {
-    return null;
-  }
-
-  return {
-    operations,
-    totalAdded: operations.reduce((sum, operation) => sum + operation.added, 0),
-    totalRemoved: operations.reduce((sum, operation) => sum + operation.removed, 0),
-  };
-}
-
-function parseAddOperation(lines: string[], index: number): { operation: PatchOperation; nextIndex: number } | null {
-  const pathText = lines[index].slice("*** Add File: ".length).trim();
-  const contentLines: string[] = [];
-  let i = index + 1;
-
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line === "*** End Patch" || isPatchSectionHeader(line)) {
-      break;
-    }
-    if (!line.startsWith("+")) {
-      return null;
-    }
-    contentLines.push(line.slice(1));
-    i += 1;
-  }
-
-  return {
-    operation: {
-      kind: "add",
-      path: pathText,
-      hunks: [{ header: "", lines: contentLines.map((content) => `+${content}`) }],
-      added: contentLines.length,
-      removed: 0,
-    },
-    nextIndex: i,
-  };
-}
-
-function parseUpdateOperation(lines: string[], index: number): { operation: PatchOperation; nextIndex: number } | null {
-  const pathText = lines[index].slice("*** Update File: ".length).trim();
-  let movePath: string | undefined;
-  let i = index + 1;
-
-  if (i < lines.length && lines[i].startsWith("*** Move to: ")) {
-    movePath = lines[i].slice("*** Move to: ".length).trim();
-    i += 1;
-  }
-
-  const hunks: PatchHunk[] = [];
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line === "*** End Patch" || isPatchSectionHeader(line)) {
-      break;
-    }
-    if (!line.startsWith("@@")) {
-      return null;
-    }
-
-    const hunk: PatchHunk = {
-      header: line === "@@" ? "" : line.slice(2).trim(),
-      lines: [],
-    };
-    i += 1;
-
-    while (i < lines.length) {
-      const hunkLine = lines[i];
-      if (hunkLine === "*** End Patch" || isPatchSectionHeader(hunkLine) || hunkLine.startsWith("@@")) {
-        break;
-      }
-      if (hunkLine === "*** End of File") {
-        i += 1;
-        continue;
-      }
-
-      const marker = hunkLine[0];
-      if (marker !== " " && marker !== "+" && marker !== "-") {
-        return null;
-      }
-      hunk.lines.push(hunkLine);
-      i += 1;
-    }
-
-    hunks.push(hunk);
-  }
-
-  if (hunks.length === 0) {
-    return null;
-  }
-
-  let added = 0;
-  let removed = 0;
-  for (const hunk of hunks) {
-    for (const hunkLine of hunk.lines) {
-      if (hunkLine.startsWith("+")) {
-        added += 1;
-      } else if (hunkLine.startsWith("-")) {
-        removed += 1;
-      }
-    }
-  }
-
-  return {
-    operation: {
-      kind: "update",
-      path: pathText,
-      movePath,
-      hunks,
-      added,
-      removed,
-    },
-    nextIndex: i,
-  };
-}
-
-function isPatchSectionHeader(line: string): boolean {
-  return line.startsWith("*** Add File: ") || line.startsWith("*** Delete File: ") || line.startsWith("*** Update File: ");
 }
 
 function renderPatchCall(parsed: ParsedPatch | null, theme: Theme, expanded: boolean): string {

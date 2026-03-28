@@ -20,11 +20,15 @@
   ],
   "files": [
     "index.ts",
+    "patch-format.ts",
     "runner.mjs",
     "scripts/rebuild-codex-apply-patch-wasm.sh",
     "vendor/apply_patch.wasm",
     "README.md"
   ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",

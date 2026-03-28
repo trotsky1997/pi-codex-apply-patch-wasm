@@ -28,10 +28,22 @@ After install, restart pi or use `/reload` in an active session.
 ## What it provides
 
 - `apply_patch` tool compatible with the Codex patch envelope
+- Codex-style path preparation before execution
 - bundled `apply_patch.wasm` for standalone installs
 - compact patch summaries in collapsed tool rows
 - expanded diff previews for multi-file and code patches
 - `/apply-patch-selftest` command to verify the WASM runner locally
+
+## Path handling
+
+The extension now mirrors the upstream Codex path flow more closely before handing work to the bundled WASM runner:
+
+- relative patch paths are kept as-is and resolved by the runner against the active `cwd`
+- absolute paths that stay inside the current `cwd` are rewritten back to relative paths before execution
+- absolute paths outside the current `cwd` are rejected with a runner-specific error because this standalone WASM setup only preopens the current working directory
+- `*** End of File` markers are preserved when a patch needs to be rewritten
+
+This means the tool behaves closer to Codex for path normalization, while still making the WASM runner's sandbox limits explicit.
 
 ## Development
 
@@ -52,4 +64,10 @@ Or use the bundled rebuild script and point it at an existing `codex/codex-rs` c
 ./scripts/rebuild-codex-apply-patch-wasm.sh \
   --codex-rs-dir /path/to/codex/codex-rs \
   --wasi-sdk-dir /path/to/wasi-sdk-32.0-x86_64-linux
+```
+
+Run the focused path-handling smoke tests with:
+
+```bash
+npm test
 ```
