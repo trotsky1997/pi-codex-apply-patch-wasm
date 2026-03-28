@@ -93,20 +93,64 @@ test("detects both POSIX and Windows absolute paths", () => {
   assert.equal(detectAbsolutePatchPath("src/file.ts"), null);
 });
 
-test("rejects malformed patch envelope and trailing content", () => {
-  const missingBegin = preparePatchInput("*** Update File: src/a.ts\n@@\n-old\n+new\n*** End Patch", "/tmp/worktree");
-  assert.match(missingBegin.error ?? "", /non-apply_patch input/);
+test("autofixes missing patch envelope lines", () => {
+  const prepared = preparePatchInput("*** Update File: src/a.ts\n@@\n-old\n+new", "/tmp/worktree");
+  assert.equal(prepared.error, undefined);
+  assert.equal(
+    prepared.patch,
+    [
+      "*** Begin Patch",
+      "*** Update File: src/a.ts",
+      "@@",
+      "-old",
+      "+new",
+      "*** End Patch",
+    ].join("\n"),
+  );
+});
 
-  const trailing = preparePatchInput(
+test("tolerates whitespace around begin patch lines", () => {
+  const prepared = preparePatchInput(
+    [
+      "   *** Begin Patch   ",
+      "*** Delete File: src/a.ts",
+      "*** End Patch",
+    ].join("\n"),
+    "/tmp/worktree",
+  );
+
+  assert.equal(prepared.error, undefined);
+  assert.equal(
+    prepared.patch,
     [
       "*** Begin Patch",
       "*** Delete File: src/a.ts",
       "*** End Patch",
-      "oops",
+    ].join("\n"),
+  );
+});
+
+test("drops trailing chatter after a trimmed patch footer", () => {
+  const prepared = preparePatchInput(
+    [
+      "*** Begin Patch",
+      "*** Delete File: src/a.ts",
+      "   *** End Patch   ",
+      "```md",
+      "extra explanation",
     ].join("\n"),
     "/tmp/worktree",
   );
-  assert.match(trailing.error ?? "", /unexpected content after/);
+
+  assert.equal(prepared.error, undefined);
+  assert.equal(
+    prepared.patch,
+    [
+      "*** Begin Patch",
+      "*** Delete File: src/a.ts",
+      "*** End Patch",
+    ].join("\n"),
+  );
 });
 
 test("rejects malformed file sections and empty paths", () => {
@@ -179,4 +223,19 @@ test("parse and serialize preserve rewrite-stable patches", () => {
   const reparsed = parsePatch(prepared.patch);
   assert.ok(reparsed);
   assert.equal(serializePatch(reparsed), prepared.patch);
+});
+
+test("parsePatch tolerates missing begin lines and trailing content", () => {
+  const parsed = parsePatch(
+    [
+      "*** Delete File: src/a.ts",
+      "*** End Patch",
+      "extra explanation",
+    ].join("\n"),
+  );
+
+  assert.ok(parsed);
+  assert.equal(parsed.operations.length, 1);
+  assert.equal(parsed.operations[0]?.kind, "delete");
+  assert.equal(parsed.operations[0]?.path, "src/a.ts");
 });

@@ -39,6 +39,8 @@ After install, restart pi or use `/reload` in an active session.
 The extension now mirrors the upstream Codex path flow more closely before handing work to the bundled WASM runner:
 
 - relative patch paths are kept as-is and resolved by the runner against the active `cwd`
+- missing `*** Begin Patch` / `*** End Patch` lines are safely restored when the patch body is otherwise valid
+- footer lines such as `  *** End Patch  ` are normalized, and trailing chatty text after the footer is ignored
 - absolute paths that stay inside the current `cwd` are rewritten back to relative paths before execution
 - absolute paths outside the current `cwd` are rejected with a runner-specific error because this standalone WASM setup only preopens the current working directory
 - `*** End of File` markers are preserved when a patch needs to be rewritten

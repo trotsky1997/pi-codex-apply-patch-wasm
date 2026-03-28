@@ -1,5 +1,8 @@
 import path from "node:path";
 
+const BEGIN_PATCH_LINE = "*** Begin Patch";
+const END_PATCH_LINE = "*** End Patch";
+
 export type PatchOperationKind = "add" | "delete" | "update";
 
 export type PatchHunk = {
@@ -24,22 +27,16 @@ export type ParsedPatch = {
 };
 
 export function preparePatchInput(patch: string, cwd: string): { patch: string; error?: string } {
-  const normalizedPatch = patch.replace(/\r\n?/g, "\n");
-  const lines = normalizedPatch.split("\n");
+  const normalizedEnvelope = normalizePatchEnvelope(patch);
+  if (normalizedEnvelope.error) {
+    return { patch, error: normalizedEnvelope.error };
+  }
 
-  if (normalizedPatch.trim().length === 0) {
+  if (normalizedEnvelope.patch.trim().length === 0) {
     return { patch, error: "apply_patch handler received invalid patch input: patch is empty" };
   }
 
-  if (lines[0]?.trim() !== "*** Begin Patch") {
-    return { patch, error: "apply_patch handler received non-apply_patch input: missing `*** Begin Patch` header" };
-  }
-
-  if (!lines.includes("*** End Patch")) {
-    return { patch, error: "apply_patch verification failed: missing `*** End Patch` footer" };
-  }
-
-  const parsed = parsePatch(normalizedPatch);
+  const parsed = parsePatch(normalizedEnvelope.patch);
   if (!parsed) {
     return {
       patch,
@@ -47,14 +44,7 @@ export function preparePatchInput(patch: string, cwd: string): { patch: string; 
     };
   }
 
-  const endPatchIndex = lines.lastIndexOf("*** End Patch");
-  for (const trailingLine of lines.slice(endPatchIndex + 1)) {
-    if (trailingLine.trim().length > 0) {
-      return { patch, error: "apply_patch verification failed: unexpected content after `*** End Patch`" };
-    }
-  }
-
-  let needsRewrite = false;
+  let needsRewrite = normalizedEnvelope.normalized;
   for (const operation of parsed.operations) {
     const rewrittenPath = rewritePatchPathForRunner(operation.path, cwd);
     if (rewrittenPath.error) {
@@ -77,7 +67,7 @@ export function preparePatchInput(patch: string, cwd: string): { patch: string; 
     }
   }
 
-  return { patch: needsRewrite ? serializePatch(parsed) : patch };
+  return { patch: needsRewrite ? serializePatch(parsed) : normalizedEnvelope.patch };
 }
 
 export function detectAbsolutePatchPath(pathText: string): "posix" | "win32" | null {
@@ -93,7 +83,7 @@ export function detectAbsolutePatchPath(pathText: string): "posix" | "win32" | n
 }
 
 export function serializePatch(parsed: ParsedPatch): string {
-  const lines = ["*** Begin Patch"];
+  const lines = [BEGIN_PATCH_LINE];
 
   for (const operation of parsed.operations) {
     if (operation.kind === "add") {
@@ -122,13 +112,18 @@ export function serializePatch(parsed: ParsedPatch): string {
     }
   }
 
-  lines.push("*** End Patch");
+  lines.push(END_PATCH_LINE);
   return lines.join("\n");
 }
 
 export function parsePatch(patch: string): ParsedPatch | null {
-  const lines = patch.replace(/\r\n?/g, "\n").split("\n");
-  if (lines.length < 2 || lines[0].trim() !== "*** Begin Patch") {
+  const normalizedEnvelope = normalizePatchEnvelope(patch);
+  if (normalizedEnvelope.error) {
+    return null;
+  }
+
+  const lines = normalizedEnvelope.patch.split("\n");
+  if (lines.length < 2 || lines[0] !== BEGIN_PATCH_LINE) {
     return null;
   }
 
@@ -138,7 +133,7 @@ export function parsePatch(patch: string): ParsedPatch | null {
   while (i < lines.length) {
     const line = lines[i];
 
-    if (line === "*** End Patch") {
+    if (line === END_PATCH_LINE) {
       break;
     }
 
@@ -190,6 +185,45 @@ export function parsePatch(patch: string): ParsedPatch | null {
     operations,
     totalAdded: operations.reduce((sum, operation) => sum + operation.added, 0),
     totalRemoved: operations.reduce((sum, operation) => sum + operation.removed, 0),
+  };
+}
+
+function normalizePatchEnvelope(patch: string): { patch: string; normalized: boolean; error?: string } {
+  const normalizedNewlines = patch.replace(/\r\n?/g, "\n");
+  if (normalizedNewlines.trim().length === 0) {
+    return { patch: normalizedNewlines, normalized: normalizedNewlines !== patch };
+  }
+
+  const lines = normalizedNewlines.split("\n");
+  let firstContentIndex = 0;
+  while (firstContentIndex < lines.length && lines[firstContentIndex].trim().length === 0) {
+    firstContentIndex += 1;
+  }
+
+  const firstContentLine = lines[firstContentIndex]?.trim();
+  if (firstContentLine !== BEGIN_PATCH_LINE && !isPatchSectionHeader(lines[firstContentIndex] ?? "")) {
+    return {
+      patch,
+      normalized: false,
+      error: "apply_patch handler received non-apply_patch input: missing `*** Begin Patch` header",
+    };
+  }
+
+  const envelopeLines =
+    firstContentLine === BEGIN_PATCH_LINE
+      ? [BEGIN_PATCH_LINE, ...lines.slice(firstContentIndex + 1)]
+      : [BEGIN_PATCH_LINE, ...lines.slice(firstContentIndex)];
+
+  const endPatchIndex = envelopeLines.findIndex((line, index) => index > 0 && line.trim() === END_PATCH_LINE);
+  const normalizedLines =
+    endPatchIndex >= 0
+      ? [...envelopeLines.slice(0, endPatchIndex), END_PATCH_LINE]
+      : [...envelopeLines, END_PATCH_LINE];
+  const normalizedPatch = normalizedLines.join("\n");
+
+  return {
+    patch: normalizedPatch,
+    normalized: normalizedPatch !== patch,
   };
 }
 
